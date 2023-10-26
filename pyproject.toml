@@ -1,0 +1,16 @@
+[project]
+name = "flask_app"
+version = "1.0.0"
+requires-python = "<3.12"
+authors = [
+  { name="Shantanu Mandpe", email="shantanu.mandpe@gmail.com" },
+]
+description = "The basic flask app accepts .udf/.bin files and converts them into parquet files and shows the data inside the .parquet file"
+readme = "README.md"
+dependencies = [
+    "flask","PyQt5","pyqtgraph","numpy" ,"pandas","pyarrow", "argparse","bleak","aioconsole",
+]
+
+[build-system]
+requires = ["flit_core<4"]
+build-backend = "flit_core.buildapi"
