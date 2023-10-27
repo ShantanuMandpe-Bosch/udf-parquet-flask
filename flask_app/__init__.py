@@ -11,7 +11,7 @@ from UDFDecoder import UDFDecoder
 
 ## try adding a python path to the pyinstaller .spec file 
 
-#UPLOAD_FOLDER = os.path.join('flask_app','staticFiles', 'uploads')
+#UPLOAD_FOLDER = os.path.join('flask_app','staticFiles', 'uploads') # for the package install method use this file_path
 UPLOAD_FOLDER = os.path.join('uploads')
 
 # Define allowed files

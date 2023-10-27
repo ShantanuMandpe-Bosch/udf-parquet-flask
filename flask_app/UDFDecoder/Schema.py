@@ -5,7 +5,7 @@ from .DataTypes import data_types
 class Schema:
     """Class that saves the data from one axis of one sensor from a UDF-File."""
 
-    def __init__(self, index: int, name: str, size_in_bytes: int, data_type: str, axis_name: str, scaling_factor: float):
+    def __init__(self, index: int, name: str, size_in_bytes: int, data_type: str, axis_name: str, scaling_factor: float, sampling_rate: float, properties: str):
         """Initialise a Object of the Schema class.
 
         Args:
@@ -15,6 +15,8 @@ class Schema:
             data_type (str): DataType of the Schema in the UDF File
             axis_name (str): Name of the axis of the schema in the UDF File
             scaling_factor (float): Scaling factor of the in the UDF File
+            sampling_rate (float): Reference sampling rate in Hz
+            properties (float): UDF sensor properties
         """
         self._index = index
         self._name = name.strip()
@@ -24,6 +26,8 @@ class Schema:
         self._scalingFactor = scaling_factor
         self._values = []
         self._timeStampIndices = []
+        self._samplingRate = sampling_rate
+        self._properties = properties
 
     def add_value(self, value) -> None:
         """Add one value to the objects list of values.
@@ -88,6 +92,14 @@ class Schema:
             str: the name of the axis
         """
         return self._axisName
+    
+    def get_properties(self) -> str:
+        """Get the UDF sensor properties
+
+        Returns:
+            str: the sensor properties
+        """
+        return self._properties
 
     def get_scaling_factor(self) -> float:
         """Get the scaling factor of the schema.
@@ -96,6 +108,14 @@ class Schema:
             float: the scaling factor
         """
         return self._scalingFactor
+    
+    def get_sampling_rate(self) -> float:
+        """Get the sampling rate of the schema.
+
+        Returns:
+            float: the sampling rate in Hz
+        """
+        return self._samplingRate
 
     def get_timestamp_indices(self) -> list:
         """Get the Indices of the timestamps.
@@ -147,6 +167,8 @@ class Schema:
         return_str += f"DataType: {self._dataType}\n"
         return_str += f"AxisName: {self._axisName}\n"
         return_str += f"ScalingFactor: {self._scalingFactor}\n"
+        return_str += f"SamplingFactor: {self._samplingRate}\n"
+        return_str += f"Properties: {self._properties}\n"
         return_str += f"Amount of Values: {self._sizeInBytes}\n"
         # return_str += f"Values: {self._values}\n"
         return(return_str)

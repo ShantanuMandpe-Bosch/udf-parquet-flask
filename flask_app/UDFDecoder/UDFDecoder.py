@@ -5,7 +5,7 @@ import pathlib
 import typing
 import pyarrow as pa
 import pyarrow.parquet as pq
-# import pyarrow.csv as csv
+#import pyarrow.csv as csv
 
 
 pyarrowSchema = typing.TypeVar("pyarrowSchema")
@@ -63,27 +63,42 @@ class UDFDecoder:
             file_blob (bytearray): A bytearray that is only the header of a binary file in the UDF format.
 
         Returns:
-            tuple[list, int]: A list of the schemata that are defined in the header and a courser that is the Index of the first byte in the binary file after the header.
+            tuple[list, int]: A list of the schemata that are defined in the header and a cursor that is the Index of the first byte in the binary file after the header.
         """
         schemata = []
-        variable_header = file_blob.decode("UTF-8").split("\n")
+        variable_header = file_blob.decode("UTF-8").split("\r\n")
         self._Version = variable_header.pop(0)
-        for schema in variable_header:
-            vals = schema.split(":")
-            axis_names = vals[4].split(",")
-            data_types = vals[3].split(",")
-            size = int(int(vals[2]) / len(data_types))
-            for axis_name in axis_names:
-                schemata.append(Schema(int(vals[0]), vals[1], size, data_types[axis_names.index(axis_name)].strip(), axis_name, float(vals[5])))
-        courser = len(file_blob)
-        return schemata, courser
+        if self._Version == "1.0":
+            for schema in variable_header:
+                vals = schema.split(":")
+                axis_names = vals[4].split(",")
+                data_types = vals[3].split(",")
+                size = int(int(vals[2]) / len(data_types))
+                for axis_name in axis_names:
+                    schemata.append(Schema(int(vals[0]), vals[1], size, data_types[axis_names.index(axis_name)].strip(), axis_name, float(vals[5]), -1, "na"))
+            cursor = len(file_blob)
+        elif self._Version == "1.1":
+            for schema in variable_header:
+                vals = schema.split(":")
+                #print(vals)
+                axis_names = vals[4].split(",")
+                data_types = vals[3].split(",")
+                size = int(int(vals[2]) / len(data_types))
+                properties = vals[7].split(",")
+                for axis_name in axis_names:
+                    schemata.append(Schema(int(vals[0]), vals[1], size, data_types[axis_names.index(axis_name)].strip(), axis_name, float(vals[5]), float(vals[6]), properties))
+            cursor = len(file_blob) + 6 # Skip the schema terminator
+        else:
+            print("Unsupported UDF Schema version")
+            cursor = 0
+        return schemata, cursor
 
-    def __values_from_byte_array(self, file_blob: bytearray, courser: int, schemata: list[Schema]) -> tuple[list[str], list[str], list[Schema]]:
+    def __values_from_byte_array(self, file_blob: bytearray, cursor: int, schemata: list[Schema]) -> tuple[list[str], list[str], list[Schema]]:
         """Read the body of a UDF File.
 
         Args:
             file_blob (bytearray): A bytearray that is only the body of a binary file in the UDF format.
-            courser (int): A int that is the index of the first byte of the body in the binary file.
+            cursor (int): A int that is the index of the first byte of the body in the binary file.
             schemata (list[Schema]): A list of schemata which were defined by the header of the binary file
 
         Raises:
@@ -94,33 +109,38 @@ class UDFDecoder:
         """
         timestamps = []
         labels = []
-        while courser < len(file_blob):
-            if ((file_blob[courser])) == 0xA:
-                courser += 1
-            elif file_blob[courser] == 0xF0 or file_blob[courser] == 0xF1:
-                courser += 1
-                timestamp_bytes = file_blob[courser:courser + 8]
+        while cursor < len(file_blob):
+            if file_blob[cursor] == 0xF0 or file_blob[cursor] == 0xF1:
+                cursor += 1
+                timestamp_bytes = file_blob[cursor:cursor + 8]
                 timestamps.append(str(struct.unpack("<Q", timestamp_bytes)[0]))
                 labels.append(None)
-                courser += 8
-            elif file_blob[courser] == 0xF8:
-                courser += 1
-                label_bytes = file_blob[courser:courser + 16]
+                cursor += 8
+            elif file_blob[cursor] == 0xF8:
+                cursor += 1
+                label_bytes = file_blob[cursor:cursor + 16]
                 labels[len(labels)] = (struct.unpack("<s", label_bytes)[0])
-                courser += 8
-            elif [schema.get_index() for schema in schemata].count(file_blob[courser]) > 0:
+                cursor += 8
+            elif [schema.get_index() for schema in schemata].count(file_blob[cursor]) > 0:
                 for schemata_index, schema in enumerate(schemata):
-                    if courser < len(file_blob) and file_blob[courser] == schema.get_index():
-                        schemas = [x for x in schemata if x.get_index() == file_blob[courser]]
+                    if cursor < len(file_blob) and file_blob[cursor] == schema.get_index():
+                        schemas = [x for x in schemata if x.get_index() == file_blob[cursor]]
                         length = sum([x.get_size_in_bytes() for x in schemas])
-                        courser += 1
+                        cursor += 1
                         for i in range(0, int(length / schema.get_size_in_bytes())):
-                            value_bytes = file_blob[courser:(courser + schema.get_size_in_bytes())]
+                            value_bytes = file_blob[cursor : (cursor + schema.get_size_in_bytes())]
+                            if len(value_bytes) != schema.get_size_in_bytes():
+                                print("Size mismatch")
+                                break
+                            if len(value_bytes) == 3: # Hack for u24 datatypes
+                                vb_ba = bytearray(value_bytes)
+                                vb_ba.append(0) # Add an MSB
+                                value_bytes = bytes(vb_ba)
                             value = struct.unpack(schema.get_datatype_for_struct_lib(), value_bytes)[0]
                             schemata[schemata_index + i].add_value(value)
                             schemata[schemata_index + i].add_timestamp_index(len(timestamps) - 1)
-                            courser += schema.get_size_in_bytes()
-            elif courser < len(file_blob):
+                            cursor += schema.get_size_in_bytes()
+            elif cursor < len(file_blob):
                 raise Exception("Can't read Values from file. File may not be readable!")
         schemata = [schema for schema in schemata if schema.get_amount_of_values() > 0]
         self.__debug_message("Printing the first 10 values of every schema\n" + str([schema.get_values()[:10] for schema in schemata]))
@@ -230,7 +250,7 @@ class UDFDecoder:
         self.__debug_message("Printing the PyArrow table:\n" + str(pyarrow_table))
         return pyarrow_table
 
-    def read_bin_file(self, file_path) -> None:  
+    def read_bin_file(self, file_path) -> None:
         """Read the binary file in the UDF Format that is given as a parameter.
 
         Args:
@@ -248,7 +268,7 @@ class UDFDecoder:
             raise TypeError(f"Argument FilePath in constructor must be a string. It is of type {type(file_path)}")
         with open(self._FilePath, 'rb') as f:
             file_blob = f.read()
-        schemata, end_of_header = self.__header_from_byte_array(file_blob[:file_blob.find("\n\n".encode("UTF-8"))])
+        schemata, end_of_header = self.__header_from_byte_array(file_blob[:file_blob.find("\r\n\r\n".encode("UTF-8"))])
         time_stamps, labels, schemata = self.__values_from_byte_array(file_blob, end_of_header, schemata)
         if self._TimeFormat != "ns":
             time_stamps = self.__convert_time(time_stamps, self._TimeFormat)
@@ -287,7 +307,7 @@ class UDFDecoder:
         else:
             raise Exception("File has to be read before getting the PyArrow Table")
 
-    def write_parquet_file(self, apply_scaling: bool): 
+    def write_parquet_file(self, apply_scaling: bool):
         """Write the PyArrow table that was created by calling read_bin_file() into a .parquet file.
 
         Args:
