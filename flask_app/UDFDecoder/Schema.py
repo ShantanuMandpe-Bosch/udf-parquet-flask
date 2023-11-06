@@ -1,59 +1,46 @@
 """Schema."""
 from .DataTypes import data_types
 
-
 class Schema:
     """Class that saves the data from one axis of one sensor from a UDF-File."""
 
-    def __init__(self, index: int, name: str, size_in_bytes: int, data_type: str, axis_name: str, scaling_factor: float, sampling_rate: float, properties: str):
+    # def __init__(self, index: int, name: str, size_in_bytes: int, event_size: int, data_type: str, axis_name: str, scaling_factor: float, sampling_rate: float, properties: str):
+    def __init__(self, name: str, size_in_bytes: int, event_size: int, data_type: str, axis_name: str, scaling_factor: float, sampling_rate: float, properties: str):    
         """Initialise a Object of the Schema class.
 
         Args:
-            index (int): Index of the schema in the UDF File
-            name (str): Name of the schema in the UDF File
-            size_in_bytes (int): Size in Bytes of the Schema in the UDF File
-            data_type (str): DataType of the Schema in the UDF File
-            axis_name (str): Name of the axis of the schema in the UDF File
-            scaling_factor (float): Scaling factor of the in the UDF File
-            sampling_rate (float): Reference sampling rate in Hz
-            properties (float): UDF sensor properties
         """
-        self._index = index
         self._name = name.strip()
         self._sizeInBytes = size_in_bytes
+        self._eventSize = event_size
         self._dataType = data_type
-        self._axisName = axis_name.strip()
+        self._axisName = axis_name
         self._scalingFactor = scaling_factor
-        self._values = []
-        self._timeStampIndices = []
+        self._values = {}
+        self._timeStampIndices = {}
         self._samplingRate = sampling_rate
         self._properties = properties
 
-    def add_value(self, value) -> None:
+
+    def add_value(self, key, value) -> None:
         """Add one value to the objects list of values.
 
         Args:
             value (any): Value to add to the list
         """
-        self._values.append(value)
+        # self._values.append(value)
+        self._values.setdefault(key, []).append(value)
 
-    def add_timestamp_index(self, time_stamp_index: int) -> None:
+    def add_timestamp_index(self, key, time_stamp_index: int) -> None:
         """Add one index of one timestamp to the list of the indices of timestamps.
 
         Args:
             time_stamp_index (int): Index to add to the list
         """
-        self._timeStampIndices.append(time_stamp_index)
+        # self._timeStampIndices.append(time_stamp_index)
+        self._timeStampIndices.setdefault(key, []).append(time_stamp_index)
 
-    def get_index(self) -> int:
-        """Get the index of the schema.
-
-        Returns:
-            int: the index
-        """
-        return self._index
-
-    def get_values(self) -> list:
+    def get_values(self) -> dict:
         """Get the list of the values.
 
         Returns:
@@ -84,6 +71,14 @@ class Schema:
             int: the size in byte.
         """
         return self._sizeInBytes
+    
+    def get_event_Size(self) -> int:
+        """Get the size of any schema value in byte.
+
+        Returns:
+            int: the size in byte.
+        """
+        return int(self._eventSize)
 
     def get_axis_name(self) -> str:
         """Get the name of the axis of the schema.
@@ -117,7 +112,7 @@ class Schema:
         """
         return self._samplingRate
 
-    def get_timestamp_indices(self) -> list:
+    def get_timestamp_indices(self) -> dict: ###
         """Get the Indices of the timestamps.
 
         Returns:
@@ -142,7 +137,7 @@ class Schema:
             str: struct datatype
         """
         for data_type in data_types:
-            if data_type.get_udf_type() == self._dataType:
+            if data_type.get_udf_type() == self._dataType: ##changes 
                 return data_type.get_structlib_type()
 
     def get_datatype_for_pyarrow_lib(self):
@@ -161,14 +156,14 @@ class Schema:
         Returns:
             str: String to print
         """
-        return_str = f"\nIndex: {self._index}\n"
-        return_str += f"Name: {self._name}\n"
+        
+        return_str = f"Name: {self._name}\n"
         return_str += f"Size in Bytes: {self._sizeInBytes}\n"
+        return_str += f"Event Size: {self._eventSize}\n"
         return_str += f"DataType: {self._dataType}\n"
         return_str += f"AxisName: {self._axisName}\n"
         return_str += f"ScalingFactor: {self._scalingFactor}\n"
         return_str += f"SamplingFactor: {self._samplingRate}\n"
         return_str += f"Properties: {self._properties}\n"
-        return_str += f"Amount of Values: {self._sizeInBytes}\n"
         # return_str += f"Values: {self._values}\n"
         return(return_str)

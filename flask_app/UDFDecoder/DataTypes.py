@@ -1,21 +1,22 @@
 """DataTypes."""
 import pyarrow as pa
 
-
 class DataType:
     """A Class that is used to convert dataTypes from different libraries."""
 
-    def __init__(self, udf_type: str, struct_lib_type: str, pyarrow_type: pa.DataType) -> None:
+    def __init__(self, udf_type: str, struct_lib_type: str, pyarrow_type: pa.DataType, length : int) -> None:
         """Initalise a DataType.
 
         Args:
             udf_type (str): Type in UDF Files
             struct_lib_type (str): Type in the struct Library
             pyarrow_type (pa.DataType): Type in the pyarrow Library
+            length (int): Length of the datatype
         """
         self._UDFType = udf_type
         self._structLibType = struct_lib_type
         self.pyarrowType = pyarrow_type
+        self.length = length
 
     def get_udf_type(self) -> str:
         """Get the UDF Type of the DataType Object.
@@ -40,20 +41,53 @@ class DataType:
             pa.DataType: The pyarrow type of this DataType
         """
         return self.pyarrowType
+    
+    def get_length(self) -> int:
+        """Get the length of the DataType Object.
+
+        Returns:
+            int: The length of this DataType
+        """
+        return self.length
 
 
 data_types = []
-data_types.append(DataType("s8", "b", pa.int8()))
-data_types.append(DataType("u8", "B", pa.uint8()))
-data_types.append(DataType("s16", "h", pa.int16()))
-data_types.append(DataType("u16", "H", pa.uint16()))
-data_types.append(DataType("s32", "i", pa.int32()))
-data_types.append(DataType("u24", "I", pa.uint32()))
-data_types.append(DataType("u32", "I", pa.uint32()))
-data_types.append(DataType("s64", "q", pa.int64()))
-data_types.append(DataType("u64", "Q", pa.uint64()))
-data_types.append(DataType("f", "f", pa.float32()))
-data_types.append(DataType("d", "d", pa.float64()))
-data_types.append(DataType("s", "s", pa.string()))
-data_types.append(DataType("st", "s", pa.string()))
+data_types.append(DataType("s8", "b", pa.int8(), 1))
+data_types.append(DataType("u8", "B", pa.uint8(), 1))
+data_types.append(DataType("s16", "h", pa.int16(), 2))
+data_types.append(DataType("u16", "H", pa.uint16(), 2))
+data_types.append(DataType("s32", "i", pa.int32(), 4))
+data_types.append(DataType("u24", "I", pa.uint32(), 3))
+data_types.append(DataType("u32", "I", pa.uint32(), 4))
+data_types.append(DataType("s64", "q", pa.int64(), 8))
+data_types.append(DataType("u64", "Q", pa.uint64(), 8))
+data_types.append(DataType("f", "f", pa.float32(), 4))
+data_types.append(DataType("d", "d", pa.float64(), 8))
+data_types.append(DataType("s", "s", pa.string(), 16))
+data_types.append(DataType("st", "s", pa.string(), 16))
 # data_types.append(DataType("", "?", pa.bool_()))
+
+def dt_get_pyarrow_type(udf_type: str) -> pa.DataType:
+    for data_type in data_types:
+            if data_type.get_udf_type() == udf_type:
+                return data_type.get_pyarrow_type()
+
+def dt_get_structlib_type(udf_type: str) -> str:
+    temp = ""
+    for data_type in data_types:
+            if data_type.get_udf_type() == udf_type:
+                temp = data_type.get_structlib_type()
+                break
+    return temp
+
+def dt_get_udf_length(udf_type: str) -> int:
+    length = 0
+    for data_type in data_types:
+            if data_type.get_udf_type() == udf_type:
+                length = data_type.get_length()
+                break
+    return length
+
+    # length = [0]
+    # length = [data_type.get_length() for data_type in data_types if data_type.get_udf_type() == udf_type]
+    # return length[0]

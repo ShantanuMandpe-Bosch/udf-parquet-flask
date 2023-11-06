@@ -1,12 +1,15 @@
 """UDFDecoder."""
+
 from .Schema import Schema
+from .DataTypes import dt_get_udf_length, dt_get_structlib_type, dt_get_pyarrow_type
 import struct
 import pathlib
 import typing
+import time
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
-#import pyarrow.csv as csv
-
+import pyarrow.csv as csv
 
 pyarrowSchema = typing.TypeVar("pyarrowSchema")
 pyarrowTable = typing.TypeVar("pyarrowTable")
@@ -18,11 +21,11 @@ class UDFDecoder:
     Defined at https://inside-docupedia.bosch.com/confluence/pages/viewpage.action?pageId=2282018346.
     """
 
-    def __init__(self, time_format: str = "ns", debug_mode: bool = False) -> None:
+    def __init__(self, debug_mode: bool = False) -> None:
         """Initialise a object of the UDFDecoder class.
 
         Args:
-            time_format (str): String defining the time_format. Can only be one of the following: 'ns', 'us', 'ms' or 's'. 'ns'. Defaults to "ns".
+            time_format (str): String defining the time_format. Can only be one of the following: 'ns'. Defaults to "ns".
             debug_mode (bool): Activates debug messages. Defaults to False.
 
         Raises:
@@ -30,12 +33,12 @@ class UDFDecoder:
             TypeError: If the TimeFormat is not a string
             TypeError: If the debug_mode is not a string
         """
-        if ["s", "ms", "us", "ns"].count(time_format) > 0:
-            self._TimeFormat = time_format
-        else:
-            if type(time_format) == str:
-                raise ValueError(f"TimeFormat '{time_format}' is not supported")
-            raise TypeError(f"Argument TimeFormat '{time_format}' in constructor must be a string. It is of type {type(time_format)}")
+        # if ["s", "ms", "us", "ns"].count(time_format) > 0:
+        self._TimeFormat = "ns"
+        # else:
+        #     if type(time_format) == str:
+        #         raise ValueError(f"TimeFormat '{time_format}' is not supported")
+        #     raise TypeError(f"Argument TimeFormat '{time_format}' in constructor must be a string. It is of type {type(time_format)}")
 
         if type(debug_mode) == bool:
             self._DebugMode = debug_mode
@@ -56,7 +59,7 @@ class UDFDecoder:
             print("-------------------------------------------")
             print(debug_message)
 
-    def __header_from_byte_array(self, file_blob: bytearray) -> tuple[list, int]:
+    def __header_from_byte_array(self, file_blob: bytearray) -> tuple[dict, int]:
         """Read the schemata from a UDF file header.
 
         Args:
@@ -65,35 +68,35 @@ class UDFDecoder:
         Returns:
             tuple[list, int]: A list of the schemata that are defined in the header and a cursor that is the Index of the first byte in the binary file after the header.
         """
-        schemata = []
+        schemata = {}
         variable_header = file_blob.decode("UTF-8").split("\r\n")
         self._Version = variable_header.pop(0)
         if self._Version == "1.0":
             for schema in variable_header:
                 vals = schema.split(":")
-                axis_names = vals[4].split(",")
-                data_types = vals[3].split(",")
-                size = int(int(vals[2]) / len(data_types))
-                for axis_name in axis_names:
-                    schemata.append(Schema(int(vals[0]), vals[1], size, data_types[axis_names.index(axis_name)].strip(), axis_name, float(vals[5]), -1, "na"))
+                event_size = vals[2].strip()
+                axis_names = [axis.strip() for axis in vals[4].split(",")]
+                data_types = [data.strip() for data in vals[3].split(",")]
+                size = [dt_get_udf_length(data) for data in data_types]
+                schemata[int(vals[0])] = Schema(int(vals[0]), vals[1], size,event_size, data_types, axis_names, float(vals[5]), -1, "na")
             cursor = len(file_blob)
         elif self._Version == "1.1":
             for schema in variable_header:
                 vals = schema.split(":")
-                #print(vals)
-                axis_names = vals[4].split(",")
-                data_types = vals[3].split(",")
-                size = int(int(vals[2]) / len(data_types))
+                event_size = vals[2].strip()
+                axis_names = [axis.strip() for axis in vals[4].split(",")]
+                data_types = [data.strip() for data in vals[3].split(",")]
+                size = [dt_get_udf_length(data) for data in data_types]
                 properties = vals[7].split(",")
-                for axis_name in axis_names:
-                    schemata.append(Schema(int(vals[0]), vals[1], size, data_types[axis_names.index(axis_name)].strip(), axis_name, float(vals[5]), float(vals[6]), properties))
+                schemata[int(vals[0])] = Schema(vals[1], size,event_size, data_types, axis_names, float(vals[5]), float(vals[6]), properties)
             cursor = len(file_blob) + 6 # Skip the schema terminator
         else:
             print("Unsupported UDF Schema version")
             cursor = 0
         return schemata, cursor
+    
 
-    def __values_from_byte_array(self, file_blob: bytearray, cursor: int, schemata: list[Schema]) -> tuple[list[str], list[str], list[Schema]]:
+    def __values_from_byte_array(self, file_blob: bytearray, cursor: int, schemata: dict) -> tuple[list[str], list[str], dict]:
         """Read the body of a UDF File.
 
         Args:
@@ -107,13 +110,14 @@ class UDFDecoder:
         Returns:
             tuple[list[str], list[str], list[Schema]]: A list of the timeStamps that are in the body, a list of the labels that are in the body and A list of the schemata which were defined in the header and have values in the body. Schemata without any data in the body are deleted.
         """
+
         timestamps = []
         labels = []
         while cursor < len(file_blob):
             if file_blob[cursor] == 0xF0 or file_blob[cursor] == 0xF1:
                 cursor += 1
                 timestamp_bytes = file_blob[cursor:cursor + 8]
-                timestamps.append(str(struct.unpack("<Q", timestamp_bytes)[0]))
+                timestamps.append(str(struct.unpack("<Q", timestamp_bytes)[0])) #unsigned 64bit
                 labels.append(None)
                 cursor += 8
             elif file_blob[cursor] == 0xF8:
@@ -121,91 +125,38 @@ class UDFDecoder:
                 label_bytes = file_blob[cursor:cursor + 16]
                 labels[len(labels)] = (struct.unpack("<s", label_bytes)[0])
                 cursor += 8
-            elif [schema.get_index() for schema in schemata].count(file_blob[cursor]) > 0:
-                for schemata_index, schema in enumerate(schemata):
-                    if cursor < len(file_blob) and file_blob[cursor] == schema.get_index():
-                        schemas = [x for x in schemata if x.get_index() == file_blob[cursor]]
-                        length = sum([x.get_size_in_bytes() for x in schemas])
-                        cursor += 1
-                        for i in range(0, int(length / schema.get_size_in_bytes())):
-                            value_bytes = file_blob[cursor : (cursor + schema.get_size_in_bytes())]
-                            if len(value_bytes) != schema.get_size_in_bytes():
-                                print("Size mismatch")
-                                break
-                            if len(value_bytes) == 3: # Hack for u24 datatypes
-                                vb_ba = bytearray(value_bytes)
-                                vb_ba.append(0) # Add an MSB
-                                value_bytes = bytes(vb_ba)
-                            value = struct.unpack(schema.get_datatype_for_struct_lib(), value_bytes)[0]
-                            schemata[schemata_index + i].add_value(value)
-                            schemata[schemata_index + i].add_timestamp_index(len(timestamps) - 1)
-                            cursor += schema.get_size_in_bytes()
-            elif cursor < len(file_blob):
+            elif cursor < len(file_blob) and file_blob[cursor] in schemata.keys():
+                current_schema = schemata.get(file_blob[cursor])
+                size_bytes = current_schema.get_size_in_bytes()
+                data_type = current_schema.get_data_type()
+                schemata_index = file_blob[cursor]
+                cursor += 1
+                for idx, x in enumerate(size_bytes):
+                    value_bytes = file_blob[cursor : (cursor + x)]
+                    if len(value_bytes) != x:
+                        print("Size mismatch")
+                        break
+                    if x == 3: # Hack for u24 datatypes
+                        vb_ba = bytearray(value_bytes)
+                        vb_ba.append(0) # Add an MSB
+                        value_bytes = bytes(vb_ba)
+                    # if x == 16 and '\x00' in value_bytes: # Hack for s/st datatypes
+                    #     pos = value_bytes.find('\x00')
+                    #     value_bytes = file_blob[cursor : (cursor + pos)]
+                    #     x = pos
+                    value = struct.unpack(dt_get_structlib_type(data_type[idx]), value_bytes)
+                    schemata[schemata_index].add_value(idx,value[0])
+                    schemata[schemata_index].add_timestamp_index(idx,len(timestamps) - 1)
+                    cursor += x
+            else:
                 raise Exception("Can't read Values from file. File may not be readable!")
-        schemata = [schema for schema in schemata if schema.get_amount_of_values() > 0]
-        self.__debug_message("Printing the first 10 values of every schema\n" + str([schema.get_values()[:10] for schema in schemata]))
-        return timestamps, labels, schemata
+            
+        temp_schemata = {i:schemata[i] for i in schemata if schemata.get(i).get_amount_of_values() > 0}
 
-    def __convert_time(self, time_stamps: list[str], time_format: str) -> list[float]:
-        """Convert a list of timeStamps from nanoseconds to microseconds, milliseconds or seconds without loss of accuracy.
+        # self.__debug_message("Printing the first 10 values of every schema\n" + str([temp_schemata[k].get_values()[:10] for k in temp_schemata]))
+        return timestamps, labels, temp_schemata
 
-        Args:
-            time_stamps (list[str]): A list of timeStamps. The timeStamps should all be strings.
-            time_format (str): A string that is the time_format to which the timeStamps of the list are to be converted to.
-
-        Returns:
-            list[float]: A list of the timeStamps, which were converted. All timeStamps are now floats.
-        """
-        self.__debug_message("Converting the time")
-        if time_format == "us":
-            for index in range(0, len(time_stamps)):
-                if len(time_stamps[index]) < 4:
-                    time_stamps[index] = ("0" * (4 - len(time_stamps[index]))) + time_stamps[index]
-                time_stamps[index] = time_stamps[index][0:len(time_stamps[index]) - 3] + "." + time_stamps[index][len(time_stamps[index]) - 3:]
-        elif time_format == "ms":
-            for index in range(0, len(time_stamps)):
-                while len(time_stamps[index]) < 7:
-                    time_stamps[index] = ("0" * (7 - len(time_stamps[index]))) + time_stamps[index]
-                time_stamps[index] = time_stamps[index][0:len(time_stamps[index]) - 6] + "." + time_stamps[index][len(time_stamps[index]) - 6:]
-        elif time_format == "s":
-            for index in range(0, len(time_stamps)):
-                while len(time_stamps[index]) < 10:
-                    time_stamps[index] = ("0" * (10 - len(time_stamps[index]))) + time_stamps[index]
-                time_stamps[index] = time_stamps[index][0:len(time_stamps[index]) - 9] + "." + time_stamps[index][len(time_stamps[index]) - 9:]
-        for index in range(0, len(time_stamps)):
-            time_stamps[index] = float(time_stamps[index])
-
-        self.__debug_message("Printing the first 10 converted timestamps\n" + str(time_stamps[:10]))
-        return time_stamps
-
-    def __scale_values(self, pyarrow_table: pyarrowTable) -> pyarrowTable:
-        """Take a PyArrow table and scales its values.
-
-        Args:
-            pyarrow_table (pyarrowTable): A PyArrow table with values and the scaling factors as metadata in the dataFields of the PyArrow schema of the table
-
-        Returns:
-            pyarrowTable: A PyArrow table with the scaled values
-        """
-        self.__debug_message("Scaling the Values")
-        pyarrow_schema = pyarrow_table.schema
-        metadata = pyarrow_schema.metadata
-        metadata[b"Was Scaled"] = "True"
-        data_fields = [pyarrow_schema[0]]
-        for data_field in pyarrow_schema:
-            if data_field.name != f"Time in {self._TimeFormat}":
-                data_fields.append(data_field.with_type(pa.float64()))
-        pyarrow_schema = pa.schema(data_fields).with_metadata(metadata)
-        value_lists = [column.to_pylist() for column in pyarrow_table.columns]
-        for value_list_index in range(1, len(value_lists)):
-            for value_index in range(0, len(value_lists[value_list_index])):
-                if value_lists[value_list_index][value_index] is not None:
-                    value_lists[value_list_index][value_index] = value_lists[value_list_index][value_index] * float(pyarrow_schema.field(value_list_index).metadata[b'scaling_factor'].decode("UTF-8"))
-        pyarrow_table = pa.Table.from_arrays(value_lists, schema=pyarrow_schema)
-        self.__debug_message("Printing the scaled PyArrow table:\n" + str(pyarrow_table))
-        return pyarrow_table
-
-    def __make_pyarrow_schema(self, schemata: list, time_format: str) -> pa.Schema:
+    def __make_pyarrow_schema(self, schemata: dict) -> pa.Schema:
         """Create a pyarrow.schema object with data taken from a list of Schema objects and a time_format defined by a string.
 
         The pyarrow schema will look something like this.:
@@ -214,20 +165,24 @@ class UDFDecoder:
 
         Args:
             schemata (list): list of schemata defined in the header of the UDF file.
-            time_format (str): string defining the time_format. If it is not 'ns'. It is expected that the timestamps are floats.
 
         Returns:
             pa.Schema: A pyarrow.schema object.
         """
-        data_fields = [pa.lib.field(schema.get_name() + "." + schema.get_axis_name(), schema.get_datatype_for_pyarrow_lib(), metadata={"scaling_factor": str(schema.get_scaling_factor())}) for schema in schemata]
-        if time_format == "ns":
-            data_fields.insert(0, pa.lib.field(f'Time in {self._TimeFormat}', pa.uint64(), metadata={"scaling_factor": "1.0"}))
-        else:
-            data_fields.insert(0, pa.lib.field(f'Time in {self._TimeFormat}', pa.float64(), metadata={"scaling_factor": "1.0"}))
+        data_fields = []
+        for k,v in schemata.items() : 
+            temp_axis = enumerate(v.get_axis_name())
+            for id, value in temp_axis:
+                data_fields.append(pa.lib.field(v.get_name() + "." + value, dt_get_pyarrow_type(v.get_data_type()[id]),metadata={"scaling_factor": str(v.get_scaling_factor())}))
+
+        # if time_format == "ns":
+        data_fields.insert(0, pa.lib.field(f'Time in {self._TimeFormat}', pa.uint64(), metadata={"scaling_factor": "1.0"}))
+        # else:
+        #     data_fields.insert(0, pa.lib.field(f'Time in {self._TimeFormat}', pa.float64(), metadata={"scaling_factor": "1.0"}))
         data_fields.insert(1, pa.lib.field('Labels', pa.string(), metadata={"scaling_factor": "1.0"}))
         return pa.schema(data_fields)
 
-    def __make_pyarrow_table(self, pyarrow_schema: pa.schema, schemata: list[Schema], time_stamps: list, labels: list) -> pa.Table:
+    def __make_pyarrow_table(self, pyarrow_schema: pa.schema, schemata: dict, time_stamps: list, labels: list) -> pa.Table:
         """Create a pyarrow.table object with data taken from a list of Schema objects and a list of time_stamps. The schema of the table is defined by a pyarrow.schema object.
 
         Args:
@@ -239,10 +194,62 @@ class UDFDecoder:
         Returns:
             pa.Table: A pyarrow.table object created from the parameters.
         """
-        all_value_lists = [[None for time_stamp in time_stamps] for i in range(0, len(schemata))]
+        time_dict = []
+        value_dict = []
+
+        schemata_items = schemata.items()
+        for k,v in schemata_items:
+            for key,value in v.get_timestamp_indices().items():
+                time_dict.append(value)
+                value_dict.append(v.get_values()[key])
+
+        all_value_lists = [[None for time_stamp in time_stamps] for i in range(0, len(time_dict))] 
         for all_value_lists_index, value_list in enumerate(all_value_lists):
-            for value_index, value in enumerate(schemata[all_value_lists_index].get_values()):
-                value_list[schemata[all_value_lists_index].get_timestamp_indices()[value_index]] = value
+            for value_index, value in enumerate(value_dict[all_value_lists_index]): # get the values for one schema 
+                value_list[time_dict[all_value_lists_index][value_index]] = value 
+        all_value_lists.insert(0, time_stamps)
+        all_value_lists.insert(1, labels)
+        pyarrow_table = pa.Table.from_arrays(all_value_lists, schema=pyarrow_schema)
+
+        self.__debug_message("Printing the PyArrow table:\n" + str(pyarrow_table))
+        return pyarrow_table
+    
+    def __make_scaled_pyarrow_table(self, pyarrow_schema: pa.schema, schemata: dict, time_stamps: list, labels: list) -> pa.Table:
+        """Create a pyarrow.table object with data taken from a list of Schema objects and a list of time_stamps. The schema of the table is defined by a pyarrow.schema object.
+        The pyarrow.table is also scaled as per the schema of the table
+
+        Args:
+            pyarrow_schema (pa.schema): A PyArrow Schema which correlates to the other two parameters.
+            schemata (dict): A Dict of Schema objects which all have values in their lists of values.
+            time_stamps (list): A list of all time_stamps of the binary file.
+            labels (list): A list of all labels in the binary file.
+
+        Returns:
+            pa.Table: A pyarrow.table object created from the parameters.
+        """
+        time_dict = []
+        value_dict = []
+
+        metadata = pyarrow_schema.metadata
+        metadata[b"Was Scaled"] = "True"
+        data_fields = [pyarrow_schema[0]]
+        for data_field in pyarrow_schema:
+            if data_field.name != f"Time in {self._TimeFormat}":
+                data_fields.append(data_field.with_type(pa.float64()))
+        pyarrow_schema = pa.schema(data_fields).with_metadata(metadata)
+
+        schemata_items = schemata.items()
+        for k,v in schemata_items:
+            for key,value in v.get_timestamp_indices().items():
+                time_dict.append(value)
+                value_dict.append(v.get_values()[key])
+
+        all_value_lists = [[None for time_stamp in time_stamps] for i in range(0, len(time_dict))] 
+        for all_value_lists_index, value_list in enumerate(all_value_lists):
+            scale = float(pyarrow_schema.field(all_value_lists_index+2).metadata[b'scaling_factor'].decode("UTF-8"))
+            for value_index, value in enumerate(value_dict[all_value_lists_index]): # get the values for one schema 
+                if value is not None:
+                    value_list[time_dict[all_value_lists_index][value_index]] = value * scale
         all_value_lists.insert(0, time_stamps)
         all_value_lists.insert(1, labels)
         pyarrow_table = pa.Table.from_arrays(all_value_lists, schema=pyarrow_schema)
@@ -250,11 +257,12 @@ class UDFDecoder:
         self.__debug_message("Printing the PyArrow table:\n" + str(pyarrow_table))
         return pyarrow_table
 
-    def read_bin_file(self, file_path) -> None:
+    def read_bin_file(self, file_path,apply_scaling: bool) -> None:
         """Read the binary file in the UDF Format that is given as a parameter.
 
         Args:
             file_path (_type_): Path to file that should be read.
+            apply_scaling (bool): Should the values be scaled according to the scaling factors in the PyArrow schema of the PyArrow table
 
         Raises:
             FileNotFoundError: If the file was not found
@@ -268,16 +276,31 @@ class UDFDecoder:
             raise TypeError(f"Argument FilePath in constructor must be a string. It is of type {type(file_path)}")
         with open(self._FilePath, 'rb') as f:
             file_blob = f.read()
-        schemata, end_of_header = self.__header_from_byte_array(file_blob[:file_blob.find("\r\n\r\n".encode("UTF-8"))])
+
+        schemata, end_of_header = self.__header_from_byte_array(file_blob[:file_blob.find("\r\n\r\n".encode("UTF-8"))]) 
+
+        start_time = time.time()
         time_stamps, labels, schemata = self.__values_from_byte_array(file_blob, end_of_header, schemata)
-        if self._TimeFormat != "ns":
-            time_stamps = self.__convert_time(time_stamps, self._TimeFormat)
-        else:
-            time_stamps = [int(time_stamp) for time_stamp in time_stamps]
-        self._PyArrowSchema = self.__make_pyarrow_schema(schemata, self._TimeFormat)
+        self.__debug_message("--- %s Prase Body Time (seconds) ---" % (time.time() - start_time))
+
+        start_time = time.time()
+        time_stamps = [np.uint64(time_stamp) for time_stamp in time_stamps]
+        self.__debug_message("--- %s TimeStamp in 'ns' Time (seconds) ---" % (time.time() - start_time))
+
+        start_time = time.time()
+        self._PyArrowSchema = self.__make_pyarrow_schema(schemata)
+        self.__debug_message("--- %s Make Schema Time (seconds) ---" % (time.time() - start_time))
+
         was_scaled = {"Was Scaled": "False"}
         self._PyArrowSchema = self._PyArrowSchema.with_metadata(was_scaled)
-        self._PyArrowTable = self.__make_pyarrow_table(self._PyArrowSchema, schemata, time_stamps, labels)
+
+        start_time = time.time()
+        if apply_scaling :
+            self._PyArrowTable = self.__make_scaled_pyarrow_table(self._PyArrowSchema, schemata, time_stamps, labels)
+            self.__debug_message("--- %s Make Scaled Table Time (seconds) ---" % (time.time() - start_time))
+        else:
+            self._PyArrowTable = self.__make_pyarrow_table(self._PyArrowSchema, schemata, time_stamps, labels)
+            self.__debug_message("--- %s Make Unscaled Table Time (seconds) ---" % (time.time() - start_time))
 
     def get_arrow_schema(self) -> pyarrowSchema:
         """Return the PyArrow schema that was created by calling read_bin_file().
@@ -307,32 +330,25 @@ class UDFDecoder:
         else:
             raise Exception("File has to be read before getting the PyArrow Table")
 
-    def write_parquet_file(self, apply_scaling: bool):
+    def write_parquet_file(self):
         """Write the PyArrow table that was created by calling read_bin_file() into a .parquet file.
 
-        Args:
-            apply_scaling (bool): Should the values be scaled according to the scaling factors in the PyArrow schema of the PyArrow table
         """
-        if apply_scaling:
-            scaled_table = self.__scale_values(self._PyArrowTable)
-            pq.write_table(scaled_table, self._FilePath.with_suffix(".parquet"))
-        else:
-            pq.write_table(self._PyArrowTable, self._FilePath.with_suffix(".parquet"))
+        start_time = time.time()
+        pq.write_table(self._PyArrowTable, self._FilePath.with_suffix(".parquet"))
+
+        self.__debug_message("--- %s Write table to Parquet File Time (seconds) ---" % (time.time() - start_time))
         self.__debug_message("Wrote PyArrowTable into a Parquet file")
 
-    def write_csv_file(self, apply_scaling: bool = True):
+    def write_csv_file(self):
         """Write the PyArrow table that was created by calling read_bin_file() into a .parquet file.
 
-        Args:
-            apply_scaling (bool): Should the values be scaled according to the scaling factors in the PyArrow schema of the PyArrow table. Defaults to True.
         """
-        if apply_scaling:
-            scaled_table = self.__scale_values(self._PyArrowTable)
-            with csv.CSVWriter(self._FilePath.with_suffix(".csv"), scaled_table.schema) as writer:
-                writer.write_table(scaled_table)
-        else:
-            with csv.CSVWriter(self._FilePath.with_suffix(".csv"), self._PyArrowTable.schema) as writer:
-                writer.write_table(self._PyArrowTable)
+        start_time = time.time()
+        with csv.CSVWriter(self._FilePath.with_suffix(".csv"), self._PyArrowTable.schema) as writer:
+            writer.write_table(self._PyArrowTable)
+
+        self.__debug_message("--- %s Write table to CSV File Time (seconds) ---" % (time.time() - start_time))
         self.__debug_message("Wrote PyArrowTable into a CSV file")
 
     def add_user_meta_data(self, meta_data: dict):
@@ -351,3 +367,5 @@ class UDFDecoder:
         self._PyArrowTable = None
         self._FilePath = None
         self.__debug_message("Reset: Set FilePath, PyArrow schema and PyArrow table to None.")
+
+
